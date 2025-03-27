@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --foreground-shadow: #ffffe349;
+  --foreground: #FFFFE3;
+  --background: #10100E;
+}
+
 html,
 body {
   @apply bg-background text-foreground;
@@ -10,4 +16,3 @@ body {
     color-scheme: dark;
   }
 }
-

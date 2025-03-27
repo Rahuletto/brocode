@@ -5,6 +5,7 @@ import {
 } from "@remix-run/node";
 import { Buffer } from "buffer";
 import * as Config from "../config/audioConfig";
+import lamejs from "lamejs";
 
 const GOERTZEL_ENERGY_THRESHOLD = Config.GOERTZEL_ENERGY_THRESHOLD;
 const SYNC_DETECTION_MULTIPLIER = Config.SYNC_DETECTION_MULTIPLIER;
@@ -171,6 +172,47 @@ function parseWavBuffer(wavBuffer: Buffer): {
   }
 }
 
+// Function to decode MP3 data using lamejs
+function decodeMp3(mp3Data: Buffer): {
+  channelData: Float32Array | null;
+  sampleRate: number | null;
+  error?: string;
+} {
+  try {
+    const mp3Decoder = new lamejs.Mp3Decoder();
+    mp3Decoder.decodeBuffer(mp3Data);
+
+    const buffer = mp3Decoder.flush();
+
+    if (buffer.length === 0) {
+      return { channelData: null, sampleRate: null, error: "No decoded data" };
+    }
+
+    const numChannels = 1; // Assuming mono audio
+    const fileSampleRate = 44100; // You might need to adjust this based on your audio source
+    const bitsPerSample = 16;
+    const bytesPerSample = bitsPerSample / 8;
+    const numSamples = buffer.length / numChannels;
+
+    const samples = new Float32Array(numSamples);
+
+    for (let i = 0; i < numSamples; i++) {
+      const intSample = buffer[i];
+      samples[i] = intSample / 32768.0;
+    }
+
+    return { channelData: samples, sampleRate: fileSampleRate };
+  } catch (error) {
+    return {
+      channelData: null,
+      sampleRate: null,
+      error: `MP3 Decode Error: ${
+        error instanceof Error ? error.message : "Unknown"
+      }`,
+    };
+  }
+}
+
 function performDecoding(
   channelData: Float32Array,
   fileSampleRate: number
@@ -324,50 +366,95 @@ function performDecoding(
   console.log(`[Server Decode] Final Text Length: ${decodedText.length}`);
   return { decodedText };
 }
-
 export async function action({ request }: ActionFunctionArgs) {
   console.log("--- Decode API Request ---");
   const uploadHandler = unstable_createMemoryUploadHandler({
-    maxPartSize: 5 * 1024 * 1024,
+    maxPartSize: 5 * 10 * 1024 * 1024,
   });
+
   try {
     const formData = await unstable_parseMultipartFormData(
       request,
       uploadHandler
     );
     const audioFile = formData.get("audioFile") as File | null;
-    if (!audioFile || typeof audioFile.arrayBuffer !== "function")
+
+    if (!audioFile || typeof audioFile.arrayBuffer !== "function") {
       return Response.json({ error: "Audio file required" }, { status: 400 });
+    }
+
+    let channelData: Float32Array | null = null;
+    let sampleRate: number | null = null;
+    let parseError: string | undefined = undefined;
+
+    // Handle WAV files (either original or converted)
     if (
-      !audioFile.type.startsWith("audio/wav") &&
-      !audioFile.type.startsWith("audio/wave")
-    )
-      return Response.json({ error: "Invalid file type (WAV only)" }, { status: 400 });
-    const arrayBuffer = await audioFile.arrayBuffer();
-    const fileBuffer = Buffer.from(arrayBuffer);
-    const {
-      channelData,
-      sampleRate,
-      error: parseError,
-    } = parseWavBuffer(fileBuffer);
-    if (parseError || !channelData || sampleRate === null)
+      audioFile.type.startsWith("audio/wav") ||
+      audioFile.type.startsWith("audio/wave")
+    ) {
+      const arrayBuffer = await audioFile.arrayBuffer();
+      const fileBuffer = Buffer.from(arrayBuffer);
+      const wavResult = parseWavBuffer(fileBuffer);
+      channelData = wavResult.channelData;
+      sampleRate = wavResult.sampleRate;
+      parseError = wavResult.error;
+    }
+    // Handle MP3 files
+    else if (audioFile.type.startsWith("audio/mp3")) {
+      const arrayBuffer = await audioFile.arrayBuffer();
+      const fileBuffer = Buffer.from(arrayBuffer);
+      const mp3Result = decodeMp3(fileBuffer);
+      channelData = mp3Result.channelData;
+      sampleRate = mp3Result.sampleRate;
+      parseError = mp3Result.error;
+    }
+    // Handle other audio types (like webm from MediaRecorder)
+    else {
+      try {
+        // Convert to WAV client-side before sending
+        return Response.json(
+          { error: "Please convert audio to WAV format before uploading" },
+          { status: 400 }
+        );
+      } catch (e) {
+        return Response.json(
+          {
+            error: `Audio conversion failed: ${
+              e instanceof Error ? e.message : "Unknown"
+            }`,
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Rest of your decoding logic...
+    if (parseError || !channelData || sampleRate === null) {
       return Response.json(
-        { error: `WAV Parse Fail: ${parseError || "Unknown"}` },
+        { error: `Audio Parse Fail: ${parseError || "Unknown"}` },
         { status: 400 }
       );
+    }
+
     const { decodedText, error: decodeError } = performDecoding(
       channelData,
       sampleRate
     );
-    if (decodeError)
-      return Response.json({ error: `Decode Fail: ${decodeError}` }, { status: 500 });
+    if (decodeError) {
+      return Response.json(
+        { error: `Decode Fail: ${decodeError}` },
+        { status: 500 }
+      );
+    }
+
     return Response.json({
       decodedText: decodedText || "(Empty result)",
     });
   } catch (error) {
     console.error("Decode API Route Error:", error);
-    if (error instanceof Error && error.message.includes("maxPartSize"))
+    if (error instanceof Error && error.message.includes("maxPartSize")) {
       return Response.json({ error: "File too large." }, { status: 413 });
+    }
     return Response.json(
       {
         error: `Server Error: ${

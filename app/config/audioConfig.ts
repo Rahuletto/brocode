@@ -48,3 +48,7 @@ if (END_DETECTION_CONFIRMATIONS < 1)
   console.warn(
     "Config Warning: END_DETECTION_CONFIRMATIONS should be at least 1."
   );
+
+
+export const NUM_CHANNELS = 1; // Mono audio
+export const BITS_PER_SAMPLE = 16;
