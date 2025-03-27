@@ -1,2 +1,4 @@
-# WIP
-## Bro code. as of now nothing is here to show lol
+# Bro Code.
+Encode your secrets to a dishwasher sound. Literally lol
+
+![VID](/vid.mp4)
